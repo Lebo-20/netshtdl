@@ -150,10 +150,10 @@ async def dl_callback(event):
     status_msg = await client.send_message(ADMIN_ID, f"⏳ Memulai download drama ID: `{book_id}`...")
     
     BotState.is_processing = True
-    processed_ids.add(book_id)
-    save_processed(processed_ids)
-    
-    await process_drama_full(book_id, AUTO_CHANNEL, status_msg)
+    success = await process_drama_full(book_id, AUTO_CHANNEL, status_msg)
+    if success:
+        processed_ids.add(book_id)
+        save_processed(processed_ids)
     BotState.is_processing = False
 
 @client.on(events.NewMessage(pattern=r'/download (.+)'))
@@ -201,10 +201,10 @@ async def on_download(event):
     status_msg = await event.reply(f"🎬 Drama: **{title}**\n📽 Total Episodes: {len(episodes)}\n\n⏳ Sedang memproses...")
     
     BotState.is_processing = True
-    processed_ids.add(book_id)
-    save_processed(processed_ids)
-    
-    await process_drama_full(book_id, chat_id, status_msg)
+    success = await process_drama_full(book_id, chat_id, status_msg)
+    if success:
+        processed_ids.add(book_id)
+        save_processed(processed_ids)
     BotState.is_processing = False
 
 async def process_drama_full(book_id, chat_id, status_msg=None):
@@ -231,17 +231,19 @@ async def process_drama_full(book_id, chat_id, status_msg=None):
         # 3. Download
         success = await download_all_episodes(episodes, video_dir)
         if not success:
-            if status_msg: await status_msg.edit("❌ Download Gagal.")
+            if status_msg: await status_msg.edit(f"❌ Download Gagal: **{title}** (Cek log untuk detail episode)")
             return False
 
         # 4. Merge
+        if status_msg: await status_msg.edit(f"📽 Merging {len(episodes)} episodes...")
         output_video_path = os.path.join(temp_dir, f"{title}.mp4")
         merge_success = merge_episodes(video_dir, output_video_path)
         if not merge_success:
-            if status_msg: await status_msg.edit("❌ Merge Gagal.")
+            if status_msg: await status_msg.edit(f"❌ Merge Gagal: **{title}**")
             return False
 
         # 5. Upload
+        if status_msg: await status_msg.edit(f"📤 Uploading **{title}** to channel...")
         upload_success = await upload_drama(
             client, chat_id, 
             title, description, 
@@ -252,7 +254,7 @@ async def process_drama_full(book_id, chat_id, status_msg=None):
             if status_msg: await status_msg.delete()
             return True
         else:
-            if status_msg: await status_msg.edit("❌ Upload Gagal.")
+            if status_msg: await status_msg.edit(f"❌ Upload Gagal: **{title}** (Mungkin file terlalu besar atau limit Telegram)")
             return False
             
     except Exception as e:
@@ -301,10 +303,6 @@ async def auto_mode_loop():
                     continue
                     
                 if book_id not in processed_ids:
-                    # Segera tandai sebagai diproses
-                    processed_ids.add(book_id)
-                    save_processed(processed_ids)
-                    
                     new_found += 1
                     title = drama.get("book_name") or drama.get("title") or "Unknown"
                     logger.info(f"✨ [MELOLO] New drama: {title} ({book_id}). Starting process...")
@@ -321,16 +319,20 @@ async def auto_mode_loop():
                     
                     if success:
                         logger.info(f"✅ Finished {title}")
+                        processed_ids.add(book_id)
+                        save_processed(processed_ids)
                         try:
                             await client.send_message(ADMIN_ID, f"✅ Sukses Auto-Post: **{title}** ke channel.")
                         except: pass
                     else:
                         logger.error(f"❌ Failed to process {title}")
-                        BotState.is_auto_running = False
+                        # Don't stop auto_running, just notify and move on
                         try:
-                            await client.send_message(ADMIN_ID, f"🚨 **ERROR**: Proses `{title}` gagal!\n🛑 **Auto-mode OTOMATIS BERHENTI**.\nCek /panel untuk menghidupkan kembali.")
+                            await client.send_message(ADMIN_ID, f"🚨 **ERROR**: Auto-mode gagal memproses `{title}`.\nMelanjutkan ke drama berikutnya...")
                         except: pass
-                        break
+                        # Optional: remove from processed_ids if fail so it can be retried later?
+                        # But that might cause infinite error loops if it's a persistent error.
+                        # Maybe just keep it in processed_ids to avoid spamming.
                     
                     # Prevent hitting API/Telegram rate limits too hard
                     await asyncio.sleep(10)

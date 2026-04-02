@@ -39,27 +39,46 @@ async def download_all_episodes(episodes, download_dir: str, semaphore_count: in
     
     async def limited_download(ep):
         async with semaphore:
-            # Episode number formatting
             ep_num = str(ep.get('episode', 'unk')).zfill(3)
             filename = f"episode_{ep_num}.mp4"
             filepath = os.path.join(download_dir, filename)
+            
+            # If already exists (maybe from previous attempt), skip?
+            # Actually better to redownload to be safe if we are retrying the whole drama
             
             vid = ep.get('vid')
             if not vid:
                 logger.error(f"No Video ID found for episode {ep_num}")
                 return False
                 
-            # Fetch URL from vid
-            url = await get_video_url(vid)
-            if not url:
-                logger.error(f"No URL found for vid {vid} (Episode {ep_num})")
-                return False
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    # Fetch URL from vid (fresh URL for each attempt since they might expire)
+                    url = await get_video_url(vid)
+                    if not url:
+                        logger.error(f"No URL found for vid {vid} (Episode {ep_num}) - Attempt {attempt+1}")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(2)
+                            continue
+                        return False
+                        
+                    async with httpx.AsyncClient(timeout=120) as client:
+                        success = await download_file(client, url, filepath)
+                        if success:
+                            # Verify file size (sometimes it's a tiny HTML error page instead of video)
+                            if os.path.exists(filepath) and os.path.getsize(filepath) > 100000: # >100KB
+                                logger.info(f"Downloaded {filename}")
+                                return True
+                            else:
+                                logger.warning(f"File {filename} is too small, likely corrupted - Attempt {attempt+1}")
+                except Exception as e:
+                    logger.error(f"Error downloading {filename} - Attempt {attempt+1}: {e}")
                 
-            async with httpx.AsyncClient(timeout=60) as client:
-                success = await download_file(client, url, filepath)
-                if success:
-                    logger.info(f"Downloaded {filename}")
-                return success
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(5)
+            
+            return False
 
     results = await asyncio.gather(*(limited_download(ep) for ep in episodes))
     return all(results)
