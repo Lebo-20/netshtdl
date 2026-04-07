@@ -260,10 +260,12 @@ async def process_drama_full(book_id, chat_id, status_msg=None):
 
         # 5. Upload
         if status_msg: await status_msg.edit(f"📤 Uploading **{title}** to channel...")
+        ep_count = len(episodes)
         upload_success = await upload_drama(
             client, chat_id, 
             title, description, 
-            poster, output_video_path
+            poster, output_video_path,
+            ep_info=f"1-{ep_count}/{ep_count}"
         )
         
         if upload_success:

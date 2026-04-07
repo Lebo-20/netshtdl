@@ -11,19 +11,64 @@ def sanitize_filename(filename: str):
     """Removes invalid characters for Windows/Linux file systems."""
     return re.sub(r'[\\/*?:"<>|]', "", filename)
 
-async def upload_progress(current, total, event, msg_text="Uploading..."):
-    """Callback function for upload progress."""
+import time
+
+def format_time(seconds):
+    if seconds < 60:
+        return f"{int(seconds)}s"
+    minutes = int(seconds // 60)
+    seconds = int(seconds % 60)
+    if minutes < 60:
+        return f"{minutes}m {seconds}s"
+    hours = int(minutes // 60)
+    minutes = int(minutes % 60)
+    return f"{hours}h {minutes}m {seconds}s"
+
+async def upload_progress(current, total, event, title, ep_info, start_time):
+    """Callback function for detailed upload progress."""
+    now = time.time()
+    
+    # Avoid flood and division by zero
+    if not hasattr(event, '_last_update_time'):
+        event._last_update_time = 0
+    
+    if now - event._last_update_time < 3: # Update every 3 seconds
+        return
+
     percentage = (current / total) * 100
+    elapsed = now - start_time
+    
+    if elapsed > 0 and current > 0:
+        speed = current / elapsed
+        remaining = total - current
+        eta = remaining / speed
+        eta_str = format_time(eta)
+    else:
+        eta_str = "Calculating..."
+
+    percentage_int = int(percentage)
+    # Progress Bar (10 blocks)
+    filled_length = int(percentage // 10)
+    bar = "■" * filled_length + "□" * (10 - filled_length)
+
+    text = (
+        f"🎬 **{title}**\n"
+        f"🔥 Status: upload...\n"
+        f"🎞 Episode {ep_info}\n"
+        f"|{bar}| {percentage_int}%\n"
+        f"⏳ Estimasi Selesai: {eta_str}"
+    )
+
     try:
-        # Avoid flood by updating every few percentages
-        if int(percentage) % 10 == 0:
-            await event.edit(f"{msg_text} {percentage:.1f}%")
-    except:
+        await event.edit(text, parse_mode='md')
+        event._last_update_time = now
+    except Exception:
         pass
 
 async def upload_drama(client: TelegramClient, chat_id: int, 
                        title: str, description: str, 
-                       poster_url: str, video_path: str):
+                       poster_url: str, video_path: str,
+                       ep_info: str = "Full"):
     """
     Uploads the drama information and merged video to Telegram.
     """
@@ -112,6 +157,7 @@ async def upload_drama(client: TelegramClient, chat_id: int,
             )
         ]
         
+        start_time = time.time()
         await client.send_file(
             chat_id,
             video_path,
@@ -119,7 +165,7 @@ async def upload_drama(client: TelegramClient, chat_id: int,
             force_document=False,
             thumb=thumb_path,
             attributes=video_attributes,
-            progress_callback=lambda c, t: upload_progress(c, t, status_msg, "Upload Video:"),
+            progress_callback=lambda c, t: upload_progress(c, t, status_msg, title, ep_info, start_time),
             supports_streaming=True
         )
         
