@@ -17,7 +17,7 @@ from api import (
 )
 from downloader import download_all_episodes
 from merge import merge_episodes
-from uploader import upload_drama
+from uploader import upload_drama, sanitize_filename
 
 # Configuration (Use environment variables or replace these directly)
 API_ID = int(os.environ.get("API_ID", "0"))
@@ -209,11 +209,22 @@ async def on_download(event):
 
 async def process_drama_full(book_id, chat_id, status_msg=None):
     """Refactored logic to be reusable for auto-mode and support Melolo API."""
-    detail = await get_drama_detail(book_id)
-    episodes = await get_all_episodes(book_id)
+    # 1. Fetch data with retries
+    max_api_retries = 3
+    detail = None
+    episodes = None
+    
+    for i in range(max_api_retries):
+        detail = await get_drama_detail(book_id)
+        episodes = await get_all_episodes(book_id)
+        if detail and episodes:
+            break
+        await asyncio.sleep(2)
     
     if not detail or not episodes:
-        if status_msg: await status_msg.edit(f"❌ Detail atau Episode `{book_id}` tidak ditemukan.")
+        err_msg = f"❌ Detail atau Episode `{book_id}` tidak ditemukan."
+        if status_msg: await status_msg.edit(err_msg)
+        logger.error(err_msg)
         return False
 
     title = detail.get("title") or detail.get("book_name") or f"Drama_{book_id}"
@@ -231,15 +242,20 @@ async def process_drama_full(book_id, chat_id, status_msg=None):
         # 3. Download
         success = await download_all_episodes(episodes, video_dir)
         if not success:
-            if status_msg: await status_msg.edit(f"❌ Download Gagal: **{title}** (Cek log untuk detail episode)")
+            err_msg = f"❌ Download Gagal: **{title}** (Cek log untuk detail episode)"
+            if status_msg: await status_msg.edit(err_msg)
+            logger.error(err_msg)
             return False
 
         # 4. Merge
         if status_msg: await status_msg.edit(f"📽 Merging {len(episodes)} episodes...")
-        output_video_path = os.path.join(temp_dir, f"{title}.mp4")
+        safe_title = sanitize_filename(title)
+        output_video_path = os.path.join(temp_dir, f"{safe_title}.mp4")
         merge_success = merge_episodes(video_dir, output_video_path)
         if not merge_success:
-            if status_msg: await status_msg.edit(f"❌ Merge Gagal: **{title}**")
+            err_msg = f"❌ Merge Gagal (FFmpeg Error): **{title}**"
+            if status_msg: await status_msg.edit(err_msg)
+            logger.error(err_msg)
             return False
 
         # 5. Upload
@@ -251,10 +267,14 @@ async def process_drama_full(book_id, chat_id, status_msg=None):
         )
         
         if upload_success:
-            if status_msg: await status_msg.delete()
+            if status_msg: 
+                try: await status_msg.delete()
+                except: pass
             return True
         else:
-            if status_msg: await status_msg.edit(f"❌ Upload Gagal: **{title}** (Mungkin file terlalu besar atau limit Telegram)")
+            err_msg = f"❌ Upload Gagal (Telegram Error): **{title}**"
+            if status_msg: await status_msg.edit(err_msg)
+            logger.error(err_msg)
             return False
             
     except Exception as e:
