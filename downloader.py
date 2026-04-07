@@ -82,16 +82,13 @@ async def download_all_episodes(episodes, download_dir: str, semaphore_count: in
 
     results = await asyncio.gather(*(limited_download(ep) for ep in episodes))
     
+    success = all(results)
     success_count = sum(1 for r in results if r is True)
     total_count = len(episodes)
     
-    if success_count == 0:
-        logger.error("❌ All episodes failed to download.")
-        return False, 0, total_count
-        
-    if success_count < total_count:
-        logger.warning(f"⚠️ Warning: Only {success_count}/{total_count} episodes were successfully downloaded.")
+    if success:
+        logger.info(f"✅ All {total_count} episodes downloaded successfully from Melolo.")
     else:
-        logger.info(f"✅ All {total_count} episodes downloaded successfully.")
+        logger.error(f"❌ Failed to download some episodes ({success_count}/{total_count}). Complete download is required.")
         
-    return True, success_count, total_count
+    return success, success_count, total_count

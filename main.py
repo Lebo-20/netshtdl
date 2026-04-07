@@ -248,10 +248,7 @@ async def process_drama_full(book_id, chat_id, status_msg=None):
             return False
 
         # 4. Merge
-        merge_text = f"📽 Merging {success_count}/{total_count} episodes..."
-        if success_count < total_count:
-            merge_text += f"\n⚠️ Warning: {total_count - success_count} episodes missing from source!"
-        if status_msg: await status_msg.edit(merge_text)
+        if status_msg: await status_msg.edit(f"📽 Merging {success_count}/{total_count} episodes...")
         safe_title = sanitize_filename(title)
         output_video_path = os.path.join(temp_dir, f"{safe_title}.mp4")
         merge_success = merge_episodes(video_dir, output_video_path)
