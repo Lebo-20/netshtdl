@@ -81,4 +81,17 @@ async def download_all_episodes(episodes, download_dir: str, semaphore_count: in
             return False
 
     results = await asyncio.gather(*(limited_download(ep) for ep in episodes))
-    return all(results)
+    
+    success_count = sum(1 for r in results if r is True)
+    total_count = len(episodes)
+    
+    if success_count == 0:
+        logger.error("❌ All episodes failed to download.")
+        return False, 0, total_count
+        
+    if success_count < total_count:
+        logger.warning(f"⚠️ Warning: Only {success_count}/{total_count} episodes were successfully downloaded.")
+    else:
+        logger.info(f"✅ All {total_count} episodes downloaded successfully.")
+        
+    return True, success_count, total_count

@@ -240,15 +240,18 @@ async def process_drama_full(book_id, chat_id, status_msg=None):
         if status_msg: await status_msg.edit(f"🎬 Processing **{title}**...")
         
         # 3. Download
-        success = await download_all_episodes(episodes, video_dir)
-        if not success:
+        download_success, success_count, total_count = await download_all_episodes(episodes, video_dir)
+        if not download_success:
             err_msg = f"❌ Download Gagal: **{title}** (Cek log untuk detail episode)"
             if status_msg: await status_msg.edit(err_msg)
             logger.error(err_msg)
             return False
 
         # 4. Merge
-        if status_msg: await status_msg.edit(f"📽 Merging {len(episodes)} episodes...")
+        merge_text = f"📽 Merging {success_count}/{total_count} episodes..."
+        if success_count < total_count:
+            merge_text += f"\n⚠️ Warning: {total_count - success_count} episodes missing from source!"
+        if status_msg: await status_msg.edit(merge_text)
         safe_title = sanitize_filename(title)
         output_video_path = os.path.join(temp_dir, f"{safe_title}.mp4")
         merge_success = merge_episodes(video_dir, output_video_path)
@@ -259,13 +262,12 @@ async def process_drama_full(book_id, chat_id, status_msg=None):
             return False
 
         # 5. Upload
-        if status_msg: await status_msg.edit(f"📤 Uploading **{title}** to channel...")
-        ep_count = len(episodes)
+        if status_msg: await status_msg.edit(f"📤 Uploading **{title}** to channel ({success_count}/{total_count})...")
         upload_success = await upload_drama(
             client, chat_id, 
             title, description, 
             poster, output_video_path,
-            ep_info=f"1-{ep_count}/{ep_count}"
+            ep_info=f"{success_count}/{total_count}"
         )
         
         if upload_success:
