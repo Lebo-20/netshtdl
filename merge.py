@@ -65,7 +65,12 @@ async def hardsub_episode(
                 filters.append(f"subtitles='{safe_sub_path}'")
             
         # Ensure even dimensions (required for libx264)
-        filters.append("scale=trunc(iw/2)*2:trunc(ih/2)*2")
+        # If too many episodes, force 720p height to keep size under 2GB
+        if total_eps > 50:
+            filters.append("scale=-2:720")
+        else:
+            filters.append("scale=trunc(iw/2)*2:trunc(ih/2)*2")
+            
         vf_chain = ",".join(filters)
         
         # 3. Fast FFmpeg Command
@@ -73,8 +78,9 @@ async def hardsub_episode(
             "ffmpeg", "-y", "-i", mp4_path,
             "-vf", vf_chain,
             "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+            "-maxrate", "1800k", "-bufsize", "3600k", # Bitrate cap for 2GB safety
             "-r", "30", # Force CFR
-            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2", # Standard Audio
+            "-c:a", "aac", "-b:a", "96k", "-ar", "44100", "-ac", "2", # Standard Audio
             "-async", "1", # Audio Sync
             output_path
         ]

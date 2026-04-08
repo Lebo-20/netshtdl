@@ -208,7 +208,7 @@ async def on_download(event):
         save_processed(processed_ids)
     BotState.is_processing = False
 
-async def process_drama_full(book_id, chat_id, status_msg=None, crf: int = 23, preset: str = "ultrafast"):
+async def process_drama_full(book_id, chat_id, status_msg=None, crf: int = 24, preset: str = "ultrafast"):
     """Refactored logic to be reusable for auto-mode and support NetShort API."""
     # 1. Fetch data with retries
     max_api_retries = 3
@@ -227,6 +227,15 @@ async def process_drama_full(book_id, chat_id, status_msg=None, crf: int = 23, p
         if status_msg: await status_msg.edit(err_msg)
         logger.error(err_msg)
         return False
+        
+    num_episodes = len(episodes)
+    # SMART CRF: Adjust quality based on length to stay under 2GB
+    if num_episodes > 70:
+        crf = 27 # High compression for long dramas
+    elif num_episodes > 40:
+        crf = 25 # Medium compression
+    else:
+        crf = 23 # High quality for short dramas
 
     title = detail.get("shortPlayName") or detail.get("scriptName") or detail.get("title") or detail.get("book_name") or detail.get("name") or f"Drama_{book_id}"
     description = detail.get("shotIntroduce") or detail.get("intro") or detail.get("description") or "No description available."
