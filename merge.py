@@ -39,17 +39,18 @@ async def hardsub_episode(
         return True, ""
 
     try:
-        # 1. Prepare Paths for FFmpeg (Windows & Linux compatible)
-        # Use relative path to avoid drive letter ':' issues on Windows
-        try:
-            rel_sub_path = os.path.relpath(ep_sub, os.getcwd()).replace("\\", "/")
-        except ValueError:
-            # Different drives on Windows
-            rel_sub_path = ep_sub.replace("\\", "/")
-        
-        # FIX: Escape colons and single quotes for the FFmpeg subtitles filter chain
-        # In FFmpeg filters, ':' must be escaped as '\:' and "'" as "\'"
-        safe_sub_path = rel_sub_path.replace("'", r"\'").replace(":", r"\:")
+        # 1. Prepare Subtitle Path (only if provided)
+        safe_sub_path = None
+        if ep_sub:
+            try:
+                rel_sub_path = os.path.relpath(ep_sub, os.getcwd()).replace("\\", "/")
+            except ValueError:
+                # Different drives on Windows
+                rel_sub_path = ep_sub.replace("\\", "/")
+            
+            # FIX: Escape commas, colons and single quotes for the FFmpeg subtitles filter chain
+            # In FFmpeg filters, ':' must be escaped as '\:', ',' as '\,' and "'" as "\'"
+            safe_sub_path = rel_sub_path.replace("'", r"\'").replace(":", r"\:").replace(",", r"\,")
         
         # 2. Build Filter Chain
         filters = []
@@ -57,7 +58,7 @@ async def hardsub_episode(
         filters.append("fps=30")
         
         # Subtitle filter (only if ep_sub is not None)
-        if ep_sub:
+        if safe_sub_path:
             if ep_sub.lower().endswith('.srt'):
                 style = "Fontname=Arial,Fontsize=12,PrimaryColour=&H00FFFFFF,Bold=1,Outline=1,OutlineColour=&H00000000,MarginV=25"
                 filters.append(f"subtitles='{safe_sub_path}':charenc=UTF-8:force_style='{style}'")
