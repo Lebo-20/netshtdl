@@ -284,10 +284,17 @@ async def process_drama_full(book_id, chat_id, status_msg=None, crf: int = 23, p
         download_success, success_count, total_count = await download_all_episodes(
             book_id, episodes, video_dir, progress_callback=download_progress_cb
         )
-        if not download_success:
-            err_msg = f"❌ Download Gagal: **{title}**"
-            if status_msg: await status_msg.edit(err_msg)
-            return False
+        
+        # IMPROVEMENT: If at least 90% is downloaded, we can try to proceed
+        if success_count < total_count:
+            if success_count > (total_count * 0.9):
+                logger.warning(f"⚠️ Only {success_count}/{total_count} episodes downloaded. Proceeding with partial drama...")
+                if status_msg: await status_msg.edit(f"⚠️ Warning: Hanya {success_count}/{total_count} episode berhasil diunduh. Melanjutkan penggabungan...")
+            else:
+                err_msg = f"❌ Download Gagal: **{title}** ({success_count}/{total_count} eps)"
+                if status_msg: await status_msg.edit(err_msg)
+                logger.error(err_msg)
+                return False
 
         # 4. Merge (supports per-episode processing)
         if status_msg: await status_msg.edit(f"📽 Merging {success_count}/{total_count} episodes...")

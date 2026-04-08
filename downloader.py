@@ -54,15 +54,18 @@ async def download_all_episodes(drama_id, episodes, download_dir: str, semaphore
             filename = f"episode_{ep_num_str}.mp4"
             filepath = os.path.join(download_dir, filename)
             
-            max_retries = 3
+            max_retries = 5 # Increased retries
             for attempt in range(max_retries):
                 try:
+                    # Give API a tiny break to avoid rate limits
+                    await asyncio.sleep(0.5)
+                    
                     # Fetch URL using drama_id and episode number
                     vid_url, sub_url = await get_video_and_sub(drama_id, int(ep_num_val))
                     if not vid_url:
-                        logger.error(f"No Video URL found for Drama {drama_id} EP {ep_num_val} - Attempt {attempt+1}")
+                        logger.error(f"No Video URL found for Drama {drama_id} EP {ep_num_val} - Attempt {attempt+1}/{max_retries}")
                         if attempt < max_retries - 1:
-                            await asyncio.sleep(2)
+                            await asyncio.sleep(5) # Longer wait on empty URL
                             continue
                         return False
                         
@@ -77,7 +80,7 @@ async def download_all_episodes(drama_id, episodes, download_dir: str, semaphore
                                 await download_file(client, sub_url, sub_filepath)
                             except Exception as e:
                                 logger.warning(f"Failed to download sub for EP {ep_num_val}: {e}")
-
+ 
                         if success:
                             # Verify file size (sometimes it's a tiny HTML error page instead of video)
                             if os.path.exists(filepath) and os.path.getsize(filepath) > 100000: # >100KB
@@ -90,9 +93,11 @@ async def download_all_episodes(drama_id, episodes, download_dir: str, semaphore
                                     except: pass
                                 return True
                             else:
-                                logger.warning(f"File {filename} is too small, likely corrupted - Attempt {attempt+1}")
+                                # Delete corrupted small file
+                                if os.path.exists(filepath): os.remove(filepath)
+                                logger.warning(f"File {filename} is too small, likely corrupted - Attempt {attempt+1}/{max_retries}")
                 except Exception as e:
-                    logger.error(f"Error downloading {filename} - Attempt {attempt+1}: {e}")
+                    logger.error(f"Error downloading {filename} - Attempt {attempt+1}/{max_retries}: {e}")
                 
                 if attempt < max_retries - 1:
                     await asyncio.sleep(5)
