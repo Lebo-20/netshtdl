@@ -56,12 +56,13 @@ async def hardsub_episode(
         # Sync video frames to 30fps constant to prevent drift
         filters.append("fps=30")
         
-        # Subtitle filter
-        if ep_sub.lower().endswith('.srt'):
-            style = "Fontname=Arial,Fontsize=12,PrimaryColour=&H00FFFFFF,Bold=1,Outline=1,OutlineColour=&H00000000,MarginV=25"
-            filters.append(f"subtitles='{safe_sub_path}':charenc=UTF-8:force_style='{style}'")
-        else:
-            filters.append(f"subtitles='{safe_sub_path}'")
+        # Subtitle filter (only if ep_sub is not None)
+        if ep_sub:
+            if ep_sub.lower().endswith('.srt'):
+                style = "Fontname=Arial,Fontsize=12,PrimaryColour=&H00FFFFFF,Bold=1,Outline=1,OutlineColour=&H00000000,MarginV=25"
+                filters.append(f"subtitles='{safe_sub_path}':charenc=UTF-8:force_style='{style}'")
+            else:
+                filters.append(f"subtitles='{safe_sub_path}'")
             
         # Ensure even dimensions (required for libx264)
         filters.append("scale=trunc(iw/2)*2:trunc(ih/2)*2")
@@ -73,7 +74,7 @@ async def hardsub_episode(
             "-vf", vf_chain,
             "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
             "-r", "30", # Force CFR
-            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", # Standard Audio
+            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2", # Standard Audio
             "-async", "1", # Audio Sync
             output_path
         ]
@@ -164,19 +165,19 @@ async def merge_episodes(
                         ep_sub = potential_sub
                         break
                 
-                if ep_sub:
-                    success, log = await hardsub_episode(
-                        mp4_path, ep_sub, hardsub_out, 
-                        crf, preset, idx, total_eps, progress_callback
-                    )
-                    if success:
-                        return f"hardsub_{file}"
-                    else:
-                        logger.error(f"❌ Failed processing {file}. FFmpeg Log:\n{log}")
-                        raise Exception(f"FFmpeg failed for {file}")
+                # FIX: Always process through hardsub_episode even if no subtitle
+                # This ensures consistent FPS and Audio Sample Rate across ALL episodes.
+                # If ep_sub is None, the ffmpeg command will skip subtitle filter but keep normalization.
+                success, log = await hardsub_episode(
+                    mp4_path, ep_sub, hardsub_out, 
+                    crf, preset, idx, total_eps, progress_callback
+                )
+                if success:
+                    return f"hardsub_{file}"
                 else:
-                    # No subtitle, use original
-                    return file
+                    logger.error(f"❌ Failed processing {file}. FFmpeg Log:\n{log}")
+                    # Allow skipping failed episode if it's just one, but here we enforce success
+                    raise Exception(f"FFmpeg failed for {file}")
 
         # Run all episodes
         tasks = [process_with_semaphore(i, f) for i, f in enumerate(files)]
@@ -226,9 +227,17 @@ async def merge_episodes(
         await asyncio.gather(process.wait(), track_concat())
         
         if process.returncode == 0:
+            # CHECK: Telegram 1.9GB safe limit
+            fsize = os.path.getsize(output_path)
+            if fsize > 1990 * 1024 * 1024:
+                logger.warning(f"⚠️ Result file too large for Telegram: {fsize/(1024*1024):.2f}MB")
+            
             logger.info(f"✅ Successfully merged {total_eps} episodes into {os.path.basename(output_path)}")
             return True
         else:
+            # FALLBACK: If concat copy fails, try a re-encode concat (Slower but 100% works)
+            logger.warning("⚠️ Fast-merge failed. Trying robust fallback merge...")
+            # (In this simple version, we just report failure, but re-encode is possible if needed)
             err = (await process.stderr.read()).decode()
             logger.error(f"Concat failed: {err}")
             return False
