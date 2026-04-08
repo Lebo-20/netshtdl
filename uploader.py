@@ -49,7 +49,7 @@ async def upload_progress(current, total, event, title, ep_info, start_time):
     percentage_int = int(percentage)
     # Progress Bar (10 blocks)
     filled_length = int(percentage // 10)
-    bar = "■" * filled_length + "□" * (10 - filled_length)
+    bar = "█" * filled_length + "░" * (10 - filled_length)
 
     text = (
         f"🎬 **{title}**\n"
@@ -77,14 +77,18 @@ async def upload_drama(client: TelegramClient, chat_id: int,
     
     try:
         # 1. Send Poster + Description as PHOTO
-        clean_desc = description[:800] if description else "No description."
-        caption = f"🎬 **{title}**\n\n📝 **Sinopsis:**\n{clean_desc}..."
+        clean_desc = description[:1024] if description else "No description available."
+        caption = (
+            f"🎬 **{title}**\n\n"
+            f"📝 **Sinopsis:**\n"
+            f"{clean_desc}"
+        )
         
         poster_path = None
         if poster_url:
             try:
                 import httpx
-                async with httpx.AsyncClient(timeout=30) as http_client:
+                async with httpx.AsyncClient(timeout=30, verify=False) as http_client:
                     resp = await http_client.get(poster_url)
                     if resp.status_code == 200:
                         poster_path = os.path.join(tempfile.gettempdir(), f"poster_{hash(title)}.jpg")

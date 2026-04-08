@@ -13,7 +13,7 @@ load_dotenv()
 from api import (
     get_drama_detail, get_all_episodes, get_latest_dramas,
     get_latest_idramas, get_idrama_detail, get_idrama_all_episodes,
-    search_dramas
+    search_dramas, get_subtitle_url
 )
 from downloader import download_all_episodes
 from merge import merge_episodes
@@ -26,6 +26,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 AUTO_CHANNEL = int(os.environ.get("AUTO_CHANNEL", ADMIN_ID)) # Default post to admin
 PROCESSED_FILE = "processed.json"
+MAX_PARALLEL_MERGE = int(os.environ.get("MAX_PARALLEL", "2")) # Number of concurrent FFmpeg tasks
 
 # Initialize state
 def load_processed():
@@ -129,8 +130,8 @@ async def on_search(event):
     buttons = []
     # Show top 5-10 results
     for res in results[:8]:
-        title = res.get("book_name") or res.get("title")
-        book_id = res.get("book_id") or res.get("id")
+        title = res.get("shortPlayName") or res.get("scriptName") or res.get("book_name") or res.get("title")
+        book_id = res.get("shortPlayId") or res.get("id") or res.get("book_id")
         if title and book_id:
             buttons.append([Button.inline(f"🎬 {title}", f"dl_{book_id}".encode())])
             
@@ -182,8 +183,8 @@ async def on_download(event):
         if not results:
             await event.reply(f"❌ Drama `{query}` tidak ditemukan.")
             return
-        book_id = results[0].get("book_id") or results[0].get("id")
-        title = results[0].get("book_name") or results[0].get("title")
+        book_id = results[0].get("shortPlayId") or results[0].get("id") or results[0].get("book_id")
+        title = results[0].get("shortPlayName") or results[0].get("scriptName") or results[0].get("book_name") or results[0].get("title")
         await event.reply(f"✅ Ditemukan: **{title}** (ID: `{book_id}`)")
     
     # 1. Fetch data
@@ -197,7 +198,7 @@ async def on_download(event):
         await event.reply(f"❌ Drama `{book_id}` tidak memiliki episode.")
         return
     
-    title = detail.get("title") or detail.get("book_name") or detail.get("name") or f"Drama_{book_id}"
+    title = detail.get("shortPlayName") or detail.get("scriptName") or detail.get("title") or detail.get("book_name") or detail.get("name") or f"Drama_{book_id}"
     status_msg = await event.reply(f"🎬 Drama: **{title}**\n📽 Total Episodes: {len(episodes)}\n\n⏳ Sedang memproses...")
     
     BotState.is_processing = True
@@ -207,8 +208,8 @@ async def on_download(event):
         save_processed(processed_ids)
     BotState.is_processing = False
 
-async def process_drama_full(book_id, chat_id, status_msg=None):
-    """Refactored logic to be reusable for auto-mode and support Melolo API."""
+async def process_drama_full(book_id, chat_id, status_msg=None, crf: int = 23, preset: str = "ultrafast"):
+    """Refactored logic to be reusable for auto-mode and support NetShort API."""
     # 1. Fetch data with retries
     max_api_retries = 3
     detail = None
@@ -227,33 +228,104 @@ async def process_drama_full(book_id, chat_id, status_msg=None):
         logger.error(err_msg)
         return False
 
-    title = detail.get("title") or detail.get("book_name") or f"Drama_{book_id}"
-    description = detail.get("intro") or "No description available."
-    poster = detail.get("cover") or ""
+    title = detail.get("shortPlayName") or detail.get("scriptName") or detail.get("title") or detail.get("book_name") or detail.get("name") or f"Drama_{book_id}"
+    description = detail.get("shotIntroduce") or detail.get("intro") or detail.get("description") or "No description available."
+    poster = detail.get("shortPlayCover") or detail.get("highImage") or detail.get("cover") or detail.get("poster") or ""
+    
+    # 1. NEW STATUS MESSAGE WITH POSTER (Static Info)
+    base_info = f"🎬 **{title}**\n\n📝 `{description[:400]}`"
+    status_msg = None # This will now be the PROGRESS message
+    
+    if poster:
+        try:
+            # Download poster to temp file first to ensure it sends as PHOTO
+            import httpx
+            import tempfile
+            poster_tmp = os.path.join(tempfile.gettempdir(), f"status_poster_{book_id}.jpg")
+            async with httpx.AsyncClient(verify=False) as http_client:
+                resp = await http_client.get(poster)
+                if resp.status_code == 200:
+                    with open(poster_tmp, "wb") as f:
+                        f.write(resp.content)
+            
+            # Send static info message
+            await client.send_file(chat_id, poster_tmp, caption=base_info)
+            if os.path.exists(poster_tmp): os.remove(poster_tmp)
+        except Exception as e:
+            logger.warning(f"Failed to send poster: {e}")
+            await client.send_message(chat_id, base_info)
+    
+    # Send a SEPARATE message for progress
+    status_msg = await client.send_message(chat_id, "⏳ **Memulai pemrosesan...**")
     
     # 2. Setup temp directory
-    temp_dir = tempfile.mkdtemp(prefix=f"melolo_{book_id}_")
+    temp_dir = tempfile.mkdtemp(prefix=f"netshort_{book_id}_")
     video_dir = os.path.join(temp_dir, "episodes")
     os.makedirs(video_dir, exist_ok=True)
     
     try:
-        if status_msg: await status_msg.edit(f"🎬 Processing **{title}**...")
-        
-        # 3. Download
-        download_success, success_count, total_count = await download_all_episodes(episodes, video_dir)
+        # 3. Download (Now requires book_id)
+        async def download_progress_cb(downloaded_count, total_count):
+            if not status_msg: return
+            pct = downloaded_count / total_count if total_count > 0 else 0
+            filled = int(pct * 10)
+            bar = "█" * filled + "░" * (10 - filled)
+            pct_str = int(pct * 100)
+            text = (
+                f"📥 Status: Downloading Episodes...\n"
+                f"🎬 Episode {downloaded_count}/{total_count}\n"
+                f"|{bar}| {pct_str}%"
+            )
+            try:
+                await status_msg.edit(text)
+            except Exception as e:
+                logger.debug(f"Progress update failed: {e}")
+            
+        download_success, success_count, total_count = await download_all_episodes(
+            book_id, episodes, video_dir, progress_callback=download_progress_cb
+        )
         if not download_success:
-            err_msg = f"❌ Download Gagal: **{title}** (Cek log untuk detail episode)"
+            err_msg = f"❌ Download Gagal: **{title}**"
             if status_msg: await status_msg.edit(err_msg)
-            logger.error(err_msg)
             return False
 
-        # 4. Merge
+        # 4. Merge (supports per-episode processing)
         if status_msg: await status_msg.edit(f"📽 Merging {success_count}/{total_count} episodes...")
         safe_title = sanitize_filename(title)
         output_video_path = os.path.join(temp_dir, f"{safe_title}.mp4")
-        merge_success = merge_episodes(video_dir, output_video_path)
+        
+        async def merge_progress_cb(pct, cep, teps, em, es):
+            if not status_msg: return
+            filled = int(pct * 10)
+            bar = "█" * filled + "░" * (10 - filled)
+            pct_str = int(pct * 100)
+            
+            # Dynamically change status text
+            status_title = "🔥 Status: Burning Hardsub..."
+            if cep == teps and pct > 0.95:
+                status_title = "📽 Status: Final Merging (Concat)..."
+                
+            text = (
+                f"{status_title}\n"
+                f"🎬 Episode {cep}/{teps}\n"
+                f"|{bar}| {pct_str}%\n"
+                f"⏳ {('Selesai dalam: ' + str(em) + 'm ' + str(es) + 's') if em > 0 or es > 0 else 'Hampir selesai...'}"
+            )
+            try:
+                await status_msg.edit(text)
+            except Exception as e:
+                logger.debug(f"Merge progress update failed: {e}")
+                
+        # The merger will automatically hardsub if it finds per-episode subtitles!
+        merge_success = await merge_episodes(
+            video_dir, output_video_path, 
+            crf=crf, preset=preset, 
+            max_parallel=MAX_PARALLEL_MERGE,
+            progress_callback=merge_progress_cb
+        )
+        
         if not merge_success:
-            err_msg = f"❌ Merge Gagal (FFmpeg Error): **{title}**"
+            err_msg = f"❌ **Merge Gagal (FFmpeg Error)**: **{title}**\n\nSilakan periksa log terminal untuk detail teknis (biasanya terkait font atau path subtitle)."
             if status_msg: await status_msg.edit(err_msg)
             logger.error(err_msg)
             return False
@@ -284,13 +356,14 @@ async def process_drama_full(book_id, chat_id, status_msg=None):
         return False
     finally:
         if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
+            try: shutil.rmtree(temp_dir)
+            except: pass
 
 async def auto_mode_loop():
-    """Loop to find and process new dramas automatically using Melolo home feed."""
+    """Loop to find and process new dramas automatically using NetShort feed."""
     global processed_ids
     
-    logger.info("🚀 Melolo Auto-Mode Started.")
+    logger.info("🚀 NetShort Auto-Mode Started.")
     
     is_initial_run = True
     
@@ -300,78 +373,68 @@ async def auto_mode_loop():
             continue
             
         try:
-            interval = 5 if is_initial_run else 15 
-            logger.info(f"🔍 Scanning for new dramas (Next scan in {interval}m)...")
+            # For NetShort, pages start from 1
+            logger.info("🔍 Scanning for new dramas...")
             
-            # Fetch trending from home
-            new_dramas = await get_latest_dramas(pages=2 if is_initial_run else 1) or []
-            queue = [d for d in new_dramas if str(d.get("book_id") or d.get("id")) not in processed_ids]
+            # Fetch from home or list/1
+            new_dramas = await get_latest_dramas(pages=2 if is_initial_run else 1, page_start=1) or []
             
-            if not queue and not is_initial_run:
-                # Try a different offset if nothing new found in first page
-                logger.info("ℹ️ No new dramas in first page. Trying offset 18...")
-                new_dramas = await get_latest_dramas(pages=1, offset=18) or []
-                queue = [d for d in new_dramas if str(d.get("book_id") or d.get("id")) not in processed_ids]
+            # Map items and filter processed
+            queue = []
+            for d in new_dramas:
+                bid = str(d.get("shortPlayId") or d.get("id") or d.get("book_id") or "")
+                if bid and bid not in processed_ids:
+                    queue.append(d)
             
             new_found = 0
-            
             for drama in queue:
                 if not BotState.is_auto_running:
                     break
                     
-                book_id = str(drama.get("book_id") or drama.get("id", ""))
-                if not book_id:
-                    continue
-                    
-                if book_id not in processed_ids:
-                    new_found += 1
-                    title = drama.get("book_name") or drama.get("title") or "Unknown"
-                    logger.info(f"✨ [MELOLO] New drama: {title} ({book_id}). Starting process...")
-                    
-                    # Notify admin
+                book_id = str(drama.get("shortPlayId") or drama.get("id") or drama.get("book_id") or "")
+                title = drama.get("shortPlayName") or drama.get("scriptName") or drama.get("book_name") or drama.get("title") or "Unknown"
+                
+                logger.info(f"✨ [NETSHORT] New drama: {title} ({book_id}). Starting process...")
+                new_found += 1
+                
+                # Notify admin
+                status_msg = None
+                try:
+                    status_msg = await client.send_message(ADMIN_ID, f"🆕 **NetShort Auto-System Mendeteksi Drama Baru!**\n🎬 {title}\n🆔 `{book_id}`\n⏳ Memproses...")
+                except: pass
+                
+                BotState.is_processing = True
+                success = await process_drama_full(book_id, AUTO_CHANNEL, status_msg)
+                BotState.is_processing = False
+                
+                if success:
+                    logger.info(f"✅ Finished {title}")
+                    processed_ids.add(book_id)
+                    save_processed(processed_ids)
                     try:
-                        await client.send_message(ADMIN_ID, f"🆕 **Auto-System Mendeteksi Drama Baru!**\n🎬 `[MELOLO] {title}`\n🆔 `{book_id}`\n⏳ Memproses download & merge...")
+                        await client.send_message(ADMIN_ID, f"✅ Sukses Auto-Post: **{title}**")
                     except: pass
-                    
-                    BotState.is_processing = True
-                    # Process to target channel
-                    success = await process_drama_full(book_id, AUTO_CHANNEL)
-                    BotState.is_processing = False
-                    
-                    if success:
-                        logger.info(f"✅ Finished {title}")
-                        processed_ids.add(book_id)
-                        save_processed(processed_ids)
-                        try:
-                            await client.send_message(ADMIN_ID, f"✅ Sukses Auto-Post: **{title}** ke channel.")
-                        except: pass
-                    else:
-                        logger.error(f"❌ Failed to process {title}")
-                        # Don't stop auto_running, just notify and move on
-                        try:
-                            await client.send_message(ADMIN_ID, f"🚨 **ERROR**: Auto-mode gagal memproses `{title}`.\nMelanjutkan ke drama berikutnya...")
-                        except: pass
-                        # Optional: remove from processed_ids if fail so it can be retried later?
-                        # But that might cause infinite error loops if it's a persistent error.
-                        # Maybe just keep it in processed_ids to avoid spamming.
-                    
-                    # Prevent hitting API/Telegram rate limits too hard
-                    await asyncio.sleep(10)
+                else:
+                    logger.error(f"❌ Failed to process {title}")
+                    try:
+                        await client.send_message(ADMIN_ID, f"🚨 **ERROR**: Gagal memproses `{title}`.")
+                    except: pass
+                
+                await asyncio.sleep(10)
             
-            if new_found == 0:
-                logger.info("😴 No new dramas found in this scan.")
+            if new_found == 0 and not is_initial_run:
+                logger.info("😴 No new dramas found.")
             
             is_initial_run = False
-            
-            # Wait for next interval but break early if auto_running is changed
-            for _ in range(interval * 60):
-                if not BotState.is_auto_running:
-                    break
+            # Wait 15 minutes
+            for _ in range(15 * 60):
+                if not BotState.is_auto_running: break
                 await asyncio.sleep(1)
             
         except Exception as e:
             logger.error(f"⚠️ Error in auto_mode_loop: {e}")
-            await asyncio.sleep(60) # retry after 1 min
+            await asyncio.sleep(60)
+
 
 if __name__ == '__main__':
     logger.info("Initializing Dramabox Auto-Bot...")
