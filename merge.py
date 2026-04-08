@@ -44,10 +44,12 @@ async def hardsub_episode(
         try:
             rel_sub_path = os.path.relpath(ep_sub, os.getcwd()).replace("\\", "/")
         except ValueError:
+            # Different drives on Windows
             rel_sub_path = ep_sub.replace("\\", "/")
         
-        # Escape single quotes for the subtitles filter
-        safe_sub_path = rel_sub_path.replace("'", r"\'")
+        # FIX: Escape colons and single quotes for the FFmpeg subtitles filter chain
+        # In FFmpeg filters, ':' must be escaped as '\:' and "'" as "\'"
+        safe_sub_path = rel_sub_path.replace("'", r"\'").replace(":", r"\:")
         
         # 2. Build Filter Chain
         filters = []
