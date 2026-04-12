@@ -257,3 +257,51 @@ async def merge_episodes(
         if 'list_file' in locals() and os.path.exists(list_file):
             try: os.remove(list_file)
             except: pass
+
+async def split_video(filepath: str, output_dir: str):
+    """
+    Splits video into two equal parts based on duration.
+    Used for files exceeding Telegram's 2GB limit.
+    """
+    try:
+        duration = await get_video_duration(filepath)
+        if duration <= 0:
+            return [filepath]
+        
+        half_duration = duration / 2
+        base_name = os.path.basename(filepath).rsplit(".", 1)[0]
+        ext = os.path.basename(filepath).rsplit(".", 1)[1]
+        
+        part1 = os.path.join(output_dir, f"PART_1_{base_name}.{ext}")
+        part2 = os.path.join(output_dir, f"PART_2_{base_name}.{ext}")
+        
+        # Split Part 1
+        cmd1 = [
+            "ffmpeg", "-y", "-i", filepath,
+            "-t", str(half_duration),
+            "-c", "copy", "-map", "0",
+            part1
+        ]
+        
+        # Split Part 2
+        cmd2 = [
+            "ffmpeg", "-y", "-ss", str(half_duration),
+            "-i", filepath,
+            "-c", "copy", "-map", "0",
+            part2
+        ]
+        
+        logger.info(f"✂️ Splitting video into 2 parts ({half_duration:.2f}s each)...")
+        
+        p1 = await asyncio.create_subprocess_exec(*cmd1, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        await p1.wait()
+        
+        p2 = await asyncio.create_subprocess_exec(*cmd2, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        await p2.wait()
+        
+        if os.path.exists(part1) and os.path.exists(part2):
+            return [part1, part2]
+        return [filepath]
+    except Exception as e:
+        logger.error(f"Split error: {e}")
+        return [filepath]

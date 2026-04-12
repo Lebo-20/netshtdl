@@ -16,7 +16,7 @@ from api import (
     search_dramas, get_subtitle_url
 )
 from downloader import download_all_episodes
-from merge import merge_episodes
+from merge import merge_episodes, split_video
 from uploader import upload_drama, sanitize_filename
 
 # Configuration (Use environment variables or replace these directly)
@@ -25,6 +25,8 @@ API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 AUTO_CHANNEL = int(os.environ.get("AUTO_CHANNEL", ADMIN_ID)) # Default post to admin
+MESSAGE_THREAD_ID = int(os.environ.get("MESSAGE_THREAD_ID", "0")) or None
+AUTO_INTERVAL = int(os.environ.get("AUTO_INTERVAL", "900")) # Default 15 mins
 PROCESSED_FILE = "processed.json"
 MAX_PARALLEL_MERGE = int(os.environ.get("MAX_PARALLEL", "2")) # Number of concurrent FFmpeg tasks
 
@@ -151,7 +153,7 @@ async def dl_callback(event):
     status_msg = await client.send_message(ADMIN_ID, f"⏳ Memulai download drama ID: `{book_id}`...")
     
     BotState.is_processing = True
-    success = await process_drama_full(book_id, AUTO_CHANNEL, status_msg)
+    success = await process_drama_full(book_id, AUTO_CHANNEL, status_msg, reply_to=MESSAGE_THREAD_ID)
     if success:
         processed_ids.add(book_id)
         save_processed(processed_ids)
@@ -202,13 +204,13 @@ async def on_download(event):
     status_msg = await event.reply(f"🎬 Drama: **{title}**\n📽 Total Episodes: {len(episodes)}\n\n⏳ Sedang memproses...")
     
     BotState.is_processing = True
-    success = await process_drama_full(book_id, chat_id, status_msg)
+    success = await process_drama_full(book_id, chat_id, status_msg, reply_to=MESSAGE_THREAD_ID if chat_id == AUTO_CHANNEL else None)
     if success:
         processed_ids.add(book_id)
         save_processed(processed_ids)
     BotState.is_processing = False
 
-async def process_drama_full(book_id, chat_id, status_msg=None, crf: int = 24, preset: str = "ultrafast"):
+async def process_drama_full(book_id, chat_id, status_msg=None, crf: int = 24, preset: str = "ultrafast", reply_to: int = None):
     """Refactored logic to be reusable for auto-mode and support NetShort API."""
     # 1. Fetch data with retries
     max_api_retries = 3
@@ -258,14 +260,14 @@ async def process_drama_full(book_id, chat_id, status_msg=None, crf: int = 24, p
                         f.write(resp.content)
             
             # Send static info message
-            await client.send_file(chat_id, poster_tmp, caption=base_info)
+            await client.send_file(chat_id, poster_tmp, caption=base_info, reply_to=reply_to)
             if os.path.exists(poster_tmp): os.remove(poster_tmp)
         except Exception as e:
             logger.warning(f"Failed to send poster: {e}")
-            await client.send_message(chat_id, base_info)
+            await client.send_message(chat_id, base_info, reply_to=reply_to)
     
     # Send a SEPARATE message for progress
-    status_msg = await client.send_message(chat_id, "⏳ **Memulai pemrosesan...**")
+    status_msg = await client.send_message(chat_id, "⏳ **Memulai pemrosesan...**", reply_to=reply_to)
     
     # 2. Setup temp directory
     temp_dir = tempfile.mkdtemp(prefix=f"netshort_{book_id}_")
@@ -346,22 +348,37 @@ async def process_drama_full(book_id, chat_id, status_msg=None, crf: int = 24, p
             logger.error(err_msg)
             return False
 
-        # 5. Upload
-        if status_msg: await status_msg.edit(f"📤 Uploading **{title}** to channel ({success_count}/{total_count})...")
-        upload_success = await upload_drama(
-            client, chat_id, 
-            title, description, 
-            poster, output_video_path,
-            ep_info=f"{success_count}/{total_count}"
-        )
+        # 5. Check Size & Split if needed (> 1.9GB)
+        video_size = os.path.getsize(output_video_path)
+        upload_queue = [output_video_path]
         
-        if upload_success:
+        if video_size > 1900 * 1024 * 1024:
+            if status_msg: await status_msg.edit(f"✂️ Size {video_size/(1024*1024*1024):.2f}GB exceeds limit. Splitting into 2 parts...")
+            upload_queue = await split_video(output_video_path, temp_dir)
+
+        # 6. Upload
+        success_count_upload = 0
+        for i, v_path in enumerate(upload_queue):
+            part_info = f" Part {i+1}/{len(upload_queue)}" if len(upload_queue) > 1 else ""
+            if status_msg: await status_msg.edit(f"📤 Uploading **{title}**{part_info}...")
+            
+            res = await upload_drama(
+                client, chat_id, 
+                title + part_info, description, 
+                poster if i == 0 else "", # Only send poster once
+                v_path,
+                ep_info=f"{success_count}/{total_count}",
+                reply_to=reply_to
+            )
+            if res: success_count_upload += 1
+
+        if success_count_upload == len(upload_queue):
             if status_msg: 
                 try: await status_msg.delete()
                 except: pass
             return True
         else:
-            err_msg = f"❌ Upload Gagal (Telegram Error): **{title}**"
+            err_msg = f"❌ Upload Gagal (Sebagian atau Semua): **{title}**"
             if status_msg: await status_msg.edit(err_msg)
             logger.error(err_msg)
             return False
@@ -420,7 +437,7 @@ async def auto_mode_loop():
                 except: pass
                 
                 BotState.is_processing = True
-                success = await process_drama_full(book_id, AUTO_CHANNEL, status_msg)
+                success = await process_drama_full(book_id, AUTO_CHANNEL, status_msg, reply_to=MESSAGE_THREAD_ID)
                 BotState.is_processing = False
                 
                 if success:
@@ -442,8 +459,8 @@ async def auto_mode_loop():
                 logger.info("😴 No new dramas found.")
             
             is_initial_run = False
-            # Wait 15 minutes
-            for _ in range(15 * 60):
+            # Wait based on AUTO_INTERVAL
+            for _ in range(AUTO_INTERVAL):
                 if not BotState.is_auto_running: break
                 await asyncio.sleep(1)
             
