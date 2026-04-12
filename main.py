@@ -28,6 +28,12 @@ AUTO_CHANNEL = int(os.environ.get("AUTO_CHANNEL", ADMIN_ID)) # Default post to a
 MESSAGE_THREAD_ID = int(os.environ.get("MESSAGE_THREAD_ID", "0")) or None
 AUTO_INTERVAL = int(os.environ.get("AUTO_INTERVAL", "900")) # Default 15 mins
 PROCESSED_FILE = "processed.json"
+
+print(f"--- BOT CONFIGURATION ---")
+print(f"AUTO_CHANNEL: {AUTO_CHANNEL}")
+print(f"MESSAGE_THREAD_ID: {MESSAGE_THREAD_ID}")
+print(f"AUTO_INTERVAL: {AUTO_INTERVAL}")
+print(f"-------------------------")
 MAX_PARALLEL_MERGE = int(os.environ.get("MAX_PARALLEL", "2")) # Number of concurrent FFmpeg tasks
 
 # Initialize state
@@ -71,11 +77,13 @@ async def update_bot(event):
     import subprocess
     import sys
     
-    status_msg = await event.reply("🔄 Menarik pembaruan dari GitHub...")
     try:
-        # Run git pull
-        result = subprocess.run(["git", "pull", "origin", "main"], capture_output=True, text=True)
-        await status_msg.edit(f"✅ Repositori berhasil di-pull:\n```\n{result.stdout}\n```\n\nSedang memulai ulang sistem (Restarting)...")
+        # Step 1: Fetch latest
+        subprocess.run(["git", "fetch", "--all"], capture_output=True, text=True)
+        # Step 2: Force Reset (Hapus file bentrok, ganti yang baru sesuai GitHub)
+        result = subprocess.run(["git", "reset", "--hard", "origin/main"], capture_output=True, text=True)
+        
+        await status_msg.edit(f"✅ Repositori berhasil di-update (Hard Reset):\n```\n{result.stdout}\n```\n\nSedang memulai ulang sistem (Restarting)...")
         
         # Restart the script forcefully replacing the current process image
         os.execl(sys.executable, sys.executable, *sys.argv)
@@ -398,6 +406,15 @@ async def auto_mode_loop():
     
     logger.info("🚀 NetShort Auto-Mode Started.")
     
+    # 0. Resolve Entity (Telethon needs to "see" the channel at least once)
+    try:
+        logger.info(f"Checking access to channel: {AUTO_CHANNEL}...")
+        entity = await client.get_entity(AUTO_CHANNEL)
+        logger.info(f"✅ Access confirmed to: {getattr(entity, 'title', 'Unknown Title')}")
+    except Exception as e:
+        logger.error(f"❌ Failed to reach AUTO_CHANNEL ({AUTO_CHANNEL}): {e}")
+        logger.warning("Make sure the bot is an ADMIN in the channel/group/topic.")
+
     is_initial_run = True
     
     while True:
