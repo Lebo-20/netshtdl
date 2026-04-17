@@ -142,15 +142,48 @@ async def on_search(event):
         await status_msg.edit(f"❌ Tidak ditemukan hasil untuk `{query}`.")
         return
         
-    buttons = []
-    # Show top 5-10 results
-    for res in results[:8]:
+    import re
+    grouped_results = {}
+    
+    # Check top 20 to find dub vs normal pairs
+    for res in results[:20]:
         title = res.get("shortPlayName") or res.get("scriptName") or res.get("book_name") or res.get("title")
         book_id = res.get("shortPlayId") or res.get("id") or res.get("book_id")
-        if title and book_id:
-            buttons.append([Button.inline(f"🎬 {title}", f"dl_{book_id}".encode())])
+        if not title or not book_id: continue
+        
+        is_dub = "dub" in title.lower()
+        # Clean the title perfectly to match base names
+        base_title = re.sub(r'[-_\s]*\(?dub(?:bing)?\)?[-_\s]*', '', title, flags=re.IGNORECASE).strip()
+        
+        if base_title not in grouped_results:
+            grouped_results[base_title] = {"normal": None, "dub": None}
             
-    await status_msg.edit(f"✅ Ditemukan {len(results)} drama untuk `{query}`:", buttons=buttons)
+        if is_dub:
+            grouped_results[base_title]["dub"] = (title, book_id)
+        else:
+            grouped_results[base_title]["normal"] = (title, book_id)
+            
+    buttons = []
+    # Show top 8 grouped results
+    for base_title, versions in list(grouped_results.items())[:8]:
+        row = []
+        if versions["normal"]:
+            t = versions["normal"][0][:35]
+            row.append(Button.inline(f"🎬 {t}", f"dl_{versions['normal'][1]}".encode()))
+            
+        if versions["dub"]:
+            if versions["normal"]:
+                # If normal also exists on the same line, just make a small DUB button
+                row.append(Button.inline(f"🎙️ DUB", f"dl_{versions['dub'][1]}".encode()))
+            else:
+                # If only dub exists, show full title
+                t = versions["dub"][0][:35]
+                row.append(Button.inline(f"🎙️ {t}", f"dl_{versions['dub'][1]}".encode()))
+                
+        if row:
+            buttons.append(row)
+            
+    await status_msg.edit(f"✅ Ditemukan hasil drama untuk `{query}`:", buttons=buttons)
 
 @client.on(events.CallbackQuery(pattern=r'^dl_(.+)'))
 async def dl_callback(event):
