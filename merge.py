@@ -60,7 +60,7 @@ async def hardsub_episode(
         # Subtitle filter (only if ep_sub is not None)
         if safe_sub_path:
             if ep_sub.lower().endswith('.srt') or ep_sub.lower().endswith('.vtt'):
-                style = "Fontname=Arial,Fontsize=12,PrimaryColour=&H00FFFFFF,Bold=1,Outline=1,OutlineColour=&H00000000,MarginV=25"
+                style = "Fontname=Standard Symbols PS,Fontsize=10,PrimaryColour=&H00FFFFFF,Bold=1,Outline=1,OutlineColour=&H00000000,MarginV=90"
                 filters.append(f"subtitles='{safe_sub_path}':charenc=UTF-8:force_style='{style}'")
             else:
                 filters.append(f"subtitles='{safe_sub_path}'")
