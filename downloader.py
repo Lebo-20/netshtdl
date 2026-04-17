@@ -21,6 +21,8 @@ async def download_file(client, url: str, path: str, progress_callback=None):
             "--auto-file-renaming=false",
             "--allow-overwrite=true",
             "--console-log-level=error",
+            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "--header=Referer: https://netshort.com/",
             "-d", dir_name,
             "-o", file_name,
             url
@@ -37,7 +39,8 @@ async def download_file(client, url: str, path: str, progress_callback=None):
         if process.returncode == 0:
             return True
         else:
-            logger.error(f"aria2c failed for {url}: {stderr.decode(errors='ignore')}")
+            err_msg = stderr.decode(errors='ignore').strip()
+            logger.error(f"aria2c failed for {url}\nError: {err_msg}")
             return False
             
     except Exception as e:
