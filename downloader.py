@@ -40,11 +40,32 @@ async def download_file(client, url: str, path: str, progress_callback=None):
             return True
         else:
             err_msg = stderr.decode(errors='ignore').strip()
-            logger.error(f"aria2c failed for {url}\nError: {err_msg}")
-            return False
+            logger.warning(f"aria2c failed (code {process.returncode}), falling back to httpx for: {url}\nError: {err_msg}")
+            
+            # FALLBACK: Download using httpx
+            try:
+                # Reuse the client if possible or create a new one
+                async with httpx.AsyncClient(timeout=300, verify=False) as fallback_client:
+                    headers = {
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "Referer": "https://netshort.com/"
+                    }
+                    async with fallback_client.stream("GET", url, headers=headers) as response:
+                        if response.status_code == 200:
+                            with open(path, "wb") as f:
+                                async for chunk in response.aiter_bytes():
+                                    if chunk:
+                                        f.write(chunk)
+                            return True
+                        else:
+                            logger.error(f"Fallback httpx also failed with status {response.status_code} for {url}")
+                            return False
+            except Exception as fe:
+                logger.error(f"Fallback httpx exception for {url}: {fe}")
+                return False
             
     except Exception as e:
-        logger.error(f"Failed to download {url} via aria2c: {e}")
+        logger.error(f"Critical error in download_file for {url}: {e}")
         return False
 
 from api import get_video_and_sub
