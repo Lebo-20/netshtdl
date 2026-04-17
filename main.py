@@ -310,8 +310,18 @@ async def process_drama_full(book_id, chat_id, status_msg=None, crf: int = 24, p
     
     try:
         # 3. Download (Now requires book_id)
+        import time
+        last_update_time = 0
+        
         async def download_progress_cb(downloaded_count, total_count):
+            nonlocal last_update_time
             if not status_msg: return
+            
+            current_time = time.time()
+            if current_time - last_update_time < 3: # Throttle: update every 3 seconds
+                return
+            
+            last_update_time = current_time
             pct = downloaded_count / total_count if total_count > 0 else 0
             filled = int(pct * 10)
             bar = "█" * filled + "░" * (10 - filled)
@@ -346,8 +356,17 @@ async def process_drama_full(book_id, chat_id, status_msg=None, crf: int = 24, p
         safe_title = sanitize_filename(title)
         output_video_path = os.path.join(temp_dir, f"{safe_title}.mp4")
         
+        last_merge_update = 0
         async def merge_progress_cb(pct, cep, teps, em, es):
+            nonlocal last_merge_update
             if not status_msg: return
+            
+            current_time = time.time()
+            # For merge, we update every 4 seconds as it's more intensive
+            if current_time - last_merge_update < 4 and pct < 0.99:
+                return
+            
+            last_merge_update = current_time
             filled = int(pct * 10)
             bar = "█" * filled + "░" * (10 - filled)
             pct_str = int(pct * 100)

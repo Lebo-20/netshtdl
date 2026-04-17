@@ -43,15 +43,17 @@ async def download_file(client, url: str, path: str, progress_callback=None):
             
         # 2. FALLBACK TO ROBUST HTTPX
         err_msg = stderr.decode(errors='ignore').strip()
-        logger.warning(f"Aria2c failed or produced empty file. Falling back to HTTPX for: {file_name}\nError: {err_msg}")
+        logger.warning(f"Aria2c failed or produced empty file. Falling back to HTTPX for: {file_name}")
         
-        return await download_with_httpx(url, path)
+        # Pass is_video status based on extension
+        is_video = not file_name.endswith(('.srt', '.ass', '.vtt', '.txt'))
+        return await download_with_httpx(url, path, is_video=is_video)
             
     except Exception as e:
         logger.error(f"Critical error in download_file: {e}")
         return False
 
-async def download_with_httpx(url, path):
+async def download_with_httpx(url, path, is_video=True):
     """Native Python download with validation and retry logic."""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -72,10 +74,15 @@ async def download_with_httpx(url, path):
                 
                 # VALIDASI 2: Cek Content-Type
                 content_type = response.headers.get("Content-Type", "").lower()
-                if "video" not in content_type and "application/octet-stream" not in content_type:
-                    logger.error(f"Invalid Content-Type: {content_type}. Expected video/mp4.")
-                    if "text/html" in content_type or "application/json" in content_type:
-                        return False
+                if is_video:
+                    if "video" not in content_type and "application/octet-stream" not in content_type:
+                        logger.error(f"Invalid Content-Type: {content_type}. Expected video/mp4.")
+                        if "text/html" in content_type or "application/json" in content_type:
+                            return False
+                else:
+                    # For subtitles, allow text/vtt, text/plain, etc.
+                    if "text" not in content_type and "application/octet-stream" not in content_type:
+                        logger.warning(f"Subtitle Content-Type: {content_type}")
                 
                 # Mulai download ke file sementara
                 temp_path = path + ".tmp"
@@ -84,7 +91,8 @@ async def download_with_httpx(url, path):
                         if chunk: f.write(chunk)
                 
                 # VALIDASI 3: Cek ukuran file minimal
-                if os.path.getsize(temp_path) < 100000:
+                min_size = 100000 if is_video else 100 # 100KB for video, 100B for sub
+                if os.path.getsize(temp_path) < min_size:
                     logger.error(f"Downloaded file too small: {os.path.getsize(temp_path)} bytes")
                     if os.path.exists(temp_path): os.remove(temp_path)
                     return False
@@ -138,10 +146,10 @@ async def download_all_episodes(drama_id, episodes, download_dir: str, semaphore
                         success = await download_file(client, vid_url, filepath)
                         
                         if success and sub_url:
-                            sub_ext = ".srt" if ".srt" in sub_url.lower() else ".ass" if ".ass" in sub_url.lower() else ".srt"
+                            sub_ext = ".srt" if ".srt" in sub_url.lower() else ".ass" if ".ass" in sub_url.lower() else ".vtt" if ".vtt" in sub_url.lower() else ".srt"
                             sub_filepath = os.path.join(download_dir, f"episode_{ep_num_str}{sub_ext}")
                             try:
-                                await download_with_httpx(sub_url, sub_filepath)
+                                await download_with_httpx(sub_url, sub_filepath, is_video=False)
                             except: pass
 
                         if success:
