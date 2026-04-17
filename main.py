@@ -18,6 +18,7 @@ from api import (
 from downloader import download_all_episodes
 from merge import merge_episodes, split_video
 from uploader import upload_drama, sanitize_filename
+from database import init_db, is_processed, save_processed_db
 
 # Configuration (Use environment variables or replace these directly)
 API_ID = int(os.environ.get("API_ID", "0"))
@@ -41,19 +42,7 @@ print(f"-------------------------")
 MAX_PARALLEL_MERGE = int(os.environ.get("MAX_PARALLEL", "2")) # Number of concurrent FFmpeg tasks
 
 # Initialize state
-def load_processed():
-    if os.path.exists(PROCESSED_FILE):
-        import json
-        with open(PROCESSED_FILE, "r") as f:
-            return set(json.load(f))
-    return set()
-
-def save_processed(data):
-    import json
-    with open(PROCESSED_FILE, "w") as f:
-        json.dump(list(data), f)
-
-processed_ids = load_processed()
+processed_ids = set() # We will use the DB primarily, this can serve as a cache
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -183,7 +172,7 @@ async def on_search(event):
         if row:
             buttons.append(row)
             
-    await status_msg.edit(f"✅ Ditemukan hasil drama untuk `{query}`:", buttons=buttons)
+    await status_msg.edit(f"✅ Ditemukan hasil drama untuk `{query}`.\n🎯 **Pilih versi yang ingin Anda download!**", buttons=buttons)
 
 @client.on(events.CallbackQuery(pattern=r'^dl_(.+)'))
 async def dl_callback(event):
@@ -195,14 +184,17 @@ async def dl_callback(event):
         await event.answer("⚠️ Bot sedang sibuk memproses manual!", alert=True)
         return
         
+    if await is_processed(book_id):
+        await event.answer("⚠️ Drama ini sudah pernah diupload!", alert=True)
+        return
+        
     await event.answer("Mulai memproses...")
     status_msg = await client.send_message(ADMIN_ID, f"⏳ Memulai download drama ID: `{book_id}`...")
     
     BotState.is_manual_processing = True
     success = await process_drama_full(book_id, AUTO_CHANNEL, status_msg, reply_to=MESSAGE_THREAD_ID)
-    if success:
-        processed_ids.add(book_id)
-        save_processed(processed_ids)
+    # The title will be fetched inside process_drama_full, we should handle DB saving there or here.
+    # Refactoring process_drama_full to return (success, title) would be better.
     BotState.is_manual_processing = False
 
 @client.on(events.NewMessage(pattern=r'/download (.+)'))
@@ -225,15 +217,14 @@ async def on_download(event):
         book_id = query
         logger.info(f"Direct ID download: {book_id}")
     else:
-        # It's a title, search for it
-        await event.reply(f"🔍 Mencari `{query}` untuk didownload...")
-        results = await search_dramas(query)
-        if not results:
-            await event.reply(f"❌ Drama `{query}` tidak ditemukan.")
-            return
-        book_id = results[0].get("shortPlayId") or results[0].get("id") or results[0].get("book_id")
-        title = results[0].get("shortPlayName") or results[0].get("scriptName") or results[0].get("book_name") or results[0].get("title")
-        await event.reply(f"✅ Ditemukan: **{title}** (ID: `{book_id}`)")
+        # It's a title, delegate to search logic so user can choose normal/dub
+        await event.reply("⚠️ Mengalihkan ke menu pencarian untuk memilih versi...")
+        await on_search(event)
+        return
+    
+    if await is_processed(book_id):
+        await event.reply("⚠️ Drama ini sudah pernah diupload!")
+        return
     
     # 1. Fetch data
     detail = await get_drama_detail(book_id)
@@ -251,9 +242,6 @@ async def on_download(event):
     
     BotState.is_manual_processing = True
     success = await process_drama_full(book_id, chat_id, status_msg, reply_to=MESSAGE_THREAD_ID if chat_id == AUTO_CHANNEL else None)
-    if success:
-        processed_ids.add(book_id)
-        save_processed(processed_ids)
     BotState.is_manual_processing = False
 
 async def process_drama_full(book_id, chat_id, status_msg=None, crf: int = 24, preset: str = "ultrafast", reply_to: int = None):
@@ -422,6 +410,9 @@ async def process_drama_full(book_id, chat_id, status_msg=None, crf: int = 24, p
             if status_msg: 
                 try: await status_msg.delete()
                 except: pass
+            # Save to database upon success
+            await save_processed_db(book_id, title)
+            processed_ids.add(book_id)
             return True
         else:
             err_msg = f"❌ Upload Gagal (Sebagian atau Semua): **{title}**"
@@ -471,8 +462,17 @@ async def auto_mode_loop():
             queue = []
             for d in new_dramas:
                 bid = str(d.get("shortPlayId") or d.get("id") or d.get("book_id") or "")
-                if bid and bid not in processed_ids:
-                    queue.append(d)
+                if not bid: continue
+                
+                # Check cache first, then DB
+                if bid in processed_ids:
+                    continue
+                
+                if await is_processed(bid):
+                    processed_ids.add(bid)
+                    continue
+                    
+                queue.append(d)
             
             new_found = 0
             for drama in queue:
@@ -497,8 +497,7 @@ async def auto_mode_loop():
                 
                 if success:
                     logger.info(f"✅ Finished {title}")
-                    processed_ids.add(book_id)
-                    save_processed(processed_ids)
+                    # Note: save_processed_db is already called inside process_drama_full
                     try:
                         await client.send_message(ADMIN_ID, f"✅ Sukses Auto-Post: **{title}**")
                     except: pass
@@ -527,9 +526,15 @@ async def auto_mode_loop():
 if __name__ == '__main__':
     logger.info("Initializing Dramabox Auto-Bot...")
     
-    with client:
-        # Start auto loop and keep the client running
+    async def main():
+        # 1. Init DB
+        await init_db()
+        
+        # 2. Start auto loop
         client.loop.create_task(auto_mode_loop())
         
         logger.info("Bot is active and monitoring.")
-        client.run_until_disconnected()
+        await client.run_until_disconnected()
+
+    with client:
+        client.loop.run_until_complete(main())
