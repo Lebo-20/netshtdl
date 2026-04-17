@@ -23,7 +23,11 @@ from uploader import upload_drama, sanitize_filename
 API_ID = int(os.environ.get("API_ID", "0"))
 API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
+ADMIN_IDS_STR = os.environ.get("ADMIN_ID", "0")
+ADMIN_IDS = [int(x.strip()) for x in ADMIN_IDS_STR.split(",") if x.strip() and x.strip().lstrip('-').isdigit()]
+if not ADMIN_IDS:
+    ADMIN_IDS = [0]
+ADMIN_ID = ADMIN_IDS[0]
 AUTO_CHANNEL = int(os.environ.get("AUTO_CHANNEL", ADMIN_ID)) # Default post to admin
 MESSAGE_THREAD_ID = int(os.environ.get("MESSAGE_THREAD_ID", "0")) or None
 AUTO_INTERVAL = int(os.environ.get("AUTO_INTERVAL", "900")) # Default 15 mins
@@ -58,7 +62,8 @@ logger = logging.getLogger(__name__)
 # Initialize Bot State
 class BotState:
     is_auto_running = True
-    is_processing = False
+    is_auto_processing = False
+    is_manual_processing = False
 
 # Initialize client
 client = TelegramClient('dramabox_bot', API_ID, API_HASH)
@@ -72,7 +77,7 @@ def get_panel_buttons():
 
 @client.on(events.NewMessage(pattern='/update'))
 async def update_bot(event):
-    if event.sender_id != ADMIN_ID:
+    if event.sender_id not in ADMIN_IDS:
         return
     import subprocess
     import sys
@@ -92,13 +97,13 @@ async def update_bot(event):
 
 @client.on(events.NewMessage(pattern='/panel'))
 async def panel(event):
-    if event.chat_id != ADMIN_ID:
+    if event.chat_id not in ADMIN_IDS:
         return
     await event.reply("🎛 **Dramabox Control Panel**", buttons=get_panel_buttons())
 
 @client.on(events.CallbackQuery())
 async def panel_callback(event):
-    if event.sender_id != ADMIN_ID:
+    if event.sender_id not in ADMIN_IDS:
         return
         
     data = event.data
@@ -127,7 +132,7 @@ async def start(event):
 
 @client.on(events.NewMessage(pattern=r'/search (.+)'))
 async def on_search(event):
-    if event.chat_id != ADMIN_ID:
+    if event.chat_id not in ADMIN_IDS:
         return
     query = event.pattern_match.group(1)
     status_msg = await event.reply(f"🔍 Mencari `{query}`...")
@@ -149,34 +154,34 @@ async def on_search(event):
 
 @client.on(events.CallbackQuery(pattern=r'^dl_(.+)'))
 async def dl_callback(event):
-    if event.sender_id != ADMIN_ID:
+    if event.sender_id not in ADMIN_IDS:
         return
     book_id = event.pattern_match.group(1).decode()
     
-    if BotState.is_processing:
-        await event.answer("⚠️ Bot sedang sibuk!", alert=True)
+    if BotState.is_manual_processing:
+        await event.answer("⚠️ Bot sedang sibuk memproses manual!", alert=True)
         return
         
     await event.answer("Mulai memproses...")
     status_msg = await client.send_message(ADMIN_ID, f"⏳ Memulai download drama ID: `{book_id}`...")
     
-    BotState.is_processing = True
+    BotState.is_manual_processing = True
     success = await process_drama_full(book_id, AUTO_CHANNEL, status_msg, reply_to=MESSAGE_THREAD_ID)
     if success:
         processed_ids.add(book_id)
         save_processed(processed_ids)
-    BotState.is_processing = False
+    BotState.is_manual_processing = False
 
 @client.on(events.NewMessage(pattern=r'/download (.+)'))
 async def on_download(event):
     chat_id = event.chat_id
     
-    if chat_id != ADMIN_ID:
+    if chat_id not in ADMIN_IDS:
         await event.reply("❌ Maaf, perintah ini hanya untuk admin.")
         return
         
-    if BotState.is_processing:
-        await event.reply("⚠️ Sedang memproses drama lain. Tunggu hingga selesai.")
+    if BotState.is_manual_processing:
+        await event.reply("⚠️ Sedang memproses request manual. Tunggu hingga selesai.")
         return
         
     query = event.pattern_match.group(1)
@@ -211,12 +216,12 @@ async def on_download(event):
     title = detail.get("shortPlayName") or detail.get("scriptName") or detail.get("title") or detail.get("book_name") or detail.get("name") or f"Drama_{book_id}"
     status_msg = await event.reply(f"🎬 Drama: **{title}**\n📽 Total Episodes: {len(episodes)}\n\n⏳ Sedang memproses...")
     
-    BotState.is_processing = True
+    BotState.is_manual_processing = True
     success = await process_drama_full(book_id, chat_id, status_msg, reply_to=MESSAGE_THREAD_ID if chat_id == AUTO_CHANNEL else None)
     if success:
         processed_ids.add(book_id)
         save_processed(processed_ids)
-    BotState.is_processing = False
+    BotState.is_manual_processing = False
 
 async def process_drama_full(book_id, chat_id, status_msg=None, crf: int = 24, preset: str = "ultrafast", reply_to: int = None):
     """Refactored logic to be reusable for auto-mode and support NetShort API."""
@@ -453,9 +458,9 @@ async def auto_mode_loop():
                     status_msg = await client.send_message(ADMIN_ID, f"🆕 **NetShort Auto-System Mendeteksi Drama Baru!**\n🎬 {title}\n🆔 `{book_id}`\n⏳ Memproses...")
                 except: pass
                 
-                BotState.is_processing = True
+                BotState.is_auto_processing = True
                 success = await process_drama_full(book_id, AUTO_CHANNEL, status_msg, reply_to=MESSAGE_THREAD_ID)
-                BotState.is_processing = False
+                BotState.is_auto_processing = False
                 
                 if success:
                     logger.info(f"✅ Finished {title}")

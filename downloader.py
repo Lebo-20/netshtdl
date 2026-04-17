@@ -5,24 +5,43 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-async def download_file(client: httpx.AsyncClient, url: str, path: str, progress_callback=None):
-    """Downloads a single file with potential progress tracking."""
+async def download_file(client, url: str, path: str, progress_callback=None):
+    """Downloads a single file using aria2c."""
     try:
-        async with client.stream("GET", url) as response:
-            response.raise_for_status()
+        dir_name = os.path.dirname(path)
+        file_name = os.path.basename(path)
+        
+        cmd = [
+            "aria2c",
+            "-x", "16", # Max connections per server
+            "-s", "16", # Split to 16
+            "-j", "16", # Max concurrent downloads
+            "-k", "1M", # Min split size
+            "--continue=true",
+            "--auto-file-renaming=false",
+            "--allow-overwrite=true",
+            "--console-log-level=error",
+            "-d", dir_name,
+            "-o", file_name,
+            url
+        ]
+        
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        stdout, stderr = await process.communicate()
+        
+        if process.returncode == 0:
+            return True
+        else:
+            logger.error(f"aria2c failed for {url}: {stderr.decode(errors='ignore')}")
+            return False
             
-            total_size = int(response.headers.get("Content-Length", 0))
-            download_size = 0
-            
-            with open(path, "wb") as f:
-                async for chunk in response.aiter_bytes():
-                    f.write(chunk)
-                    download_size += len(chunk)
-                    if progress_callback:
-                        await progress_callback(download_size, total_size)
-        return True
     except Exception as e:
-        logger.error(f"Failed to download {url}: {e}")
+        logger.error(f"Failed to download {url} via aria2c: {e}")
         return False
 
 from api import get_video_and_sub
