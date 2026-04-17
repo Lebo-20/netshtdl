@@ -59,7 +59,7 @@ async def hardsub_episode(
         
         # Subtitle filter (only if ep_sub is not None)
         if safe_sub_path:
-            if ep_sub.lower().endswith('.srt'):
+            if ep_sub.lower().endswith('.srt') or ep_sub.lower().endswith('.vtt'):
                 style = "Fontname=Arial,Fontsize=12,PrimaryColour=&H00FFFFFF,Bold=1,Outline=1,OutlineColour=&H00000000,MarginV=25"
                 filters.append(f"subtitles='{safe_sub_path}':charenc=UTF-8:force_style='{style}'")
             else:
@@ -166,7 +166,7 @@ async def merge_episodes(
                 
                 # Check for subtitles
                 ep_sub = None
-                for ext in [".srt", ".ass"]:
+                for ext in [".srt", ".ass", ".vtt"]:
                     potential_sub = os.path.join(video_dir, f"{ep_base}{ext}")
                     if os.path.exists(potential_sub):
                         ep_sub = potential_sub
