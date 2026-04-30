@@ -22,6 +22,13 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS failed_dramas (
+                drama_id TEXT PRIMARY KEY,
+                fail_count INTEGER DEFAULT 1,
+                last_failed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
         await conn.close()
         logger.info("Database initialized successfully.")
         return True
@@ -60,4 +67,57 @@ async def save_processed_db(drama_id, title):
         return True
     except Exception as e:
         logger.error(f"Error saving to database: {e}")
+        return False
+
+async def is_failed_skip(drama_id):
+    """Checks if a drama should be skipped due to failure rules."""
+    if not DATABASE_URL:
+        return False
+        
+    try:
+        conn = await asyncpg.connect(DATABASE_URL)
+        row = await conn.fetchrow('SELECT fail_count, last_failed_at FROM failed_dramas WHERE drama_id = $1', str(drama_id))
+        await conn.close()
+        if not row:
+            return False
+            
+        fail_count = row['fail_count']
+        last_failed_at = row['last_failed_at']
+        
+        # If failed 3+ times, skip permanently
+        if fail_count >= 3:
+            return True
+            
+        # If failed 2 times, skip if within 24 hours
+        import datetime
+        if fail_count == 2:
+            now = datetime.datetime.now()
+            # postgres timestamp doesn't always have timezone, safe to use simple diff
+            if (now - last_failed_at).total_seconds() < 86400:
+                return True
+                
+        return False
+    except Exception as e:
+        logger.error(f"Error checking fail status {drama_id}: {e}")
+        return False
+
+async def log_failure(drama_id):
+    """Logs a failure for a drama_id."""
+    if not DATABASE_URL:
+        return False
+        
+    try:
+        conn = await asyncpg.connect(DATABASE_URL)
+        await conn.execute('''
+            INSERT INTO failed_dramas (drama_id, fail_count, last_failed_at)
+            VALUES ($1, 1, CURRENT_TIMESTAMP)
+            ON CONFLICT (drama_id) DO UPDATE 
+            SET fail_count = failed_dramas.fail_count + 1,
+                last_failed_at = CURRENT_TIMESTAMP
+        ''', str(drama_id))
+        await conn.close()
+        logger.info(f"Logged failure for drama: {drama_id}")
+        return True
+    except Exception as e:
+        logger.error(f"Error logging failure: {e}")
         return False

@@ -69,7 +69,8 @@ async def upload_drama(client: TelegramClient, chat_id: int,
                        title: str, description: str, 
                        poster_url: str, video_path: str,
                        ep_info: str = "Full",
-                       reply_to: int = None):
+                       reply_to: int = None,
+                       send_details: bool = True):
     """
     Uploads the drama information and merged video to Telegram.
     """
@@ -77,52 +78,52 @@ async def upload_drama(client: TelegramClient, chat_id: int,
     import tempfile
     
     try:
-        # 1. Send Poster + Description as PHOTO
-        clean_desc = description[:1024] if description else "No description available."
-        caption = (
-            f"🎬 **{title}**\n\n"
-            f"📝 **Sinopsis:**\n"
-            f"{clean_desc}"
-        )
-        
-        poster_path = None
-        if poster_url:
-            try:
-                import httpx
-                async with httpx.AsyncClient(timeout=30, verify=False) as http_client:
-                    resp = await http_client.get(poster_url)
-                    if resp.status_code == 200:
-                        poster_path = os.path.join(tempfile.gettempdir(), f"poster_{hash(title)}.jpg")
-                        with open(poster_path, "wb") as pf:
-                            pf.write(resp.content)
-            except Exception as e:
-                logger.warning(f"Failed to download poster: {e}")
+        if send_details:
+            clean_desc = description[:1024] if description else "No description available."
+            caption = (
+                f"🎬 **{title}**\n\n"
+                f"📝 **Sinopsis:**\n"
+                f"{clean_desc}"
+            )
+            
+            poster_path = None
+            if poster_url:
+                try:
+                    import httpx
+                    async with httpx.AsyncClient(timeout=30, verify=False) as http_client:
+                        resp = await http_client.get(poster_url)
+                        if resp.status_code == 200:
+                            poster_path = os.path.join(tempfile.gettempdir(), f"poster_{hash(title)}.jpg")
+                            with open(poster_path, "wb") as pf:
+                                pf.write(resp.content)
+                except Exception as e:
+                    logger.warning(f"Failed to download poster: {e}")
 
-        # Send as visible photo (if possible)
-        try:
-            if poster_path or (poster_url and poster_url.startswith("http")):
-                await client.send_file(
-                    chat_id,
-                    poster_path or poster_url,
-                    caption=caption,
-                    parse_mode='md',
-                    force_document=False,
-                    reply_to=reply_to
-                )
-            else:
-                # Fallback to message if no poster
-                await client.send_message(chat_id, caption, parse_mode='md', reply_to=reply_to)
-        except Exception as e:
-            logger.warning(f"Failed to send poster/caption: {e}")
-            # Try to send just the caption as text if file fails
+            # Send as visible photo (if possible)
             try:
-                await client.send_message(chat_id, caption, parse_mode='md', reply_to=reply_to)
-            except: pass
-        
-        # Cleanup poster temp file
-        if poster_path and os.path.exists(poster_path):
-            try: os.remove(poster_path)
-            except: pass
+                if poster_path or (poster_url and poster_url.startswith("http")):
+                    await client.send_file(
+                        chat_id,
+                        poster_path or poster_url,
+                        caption=caption,
+                        parse_mode='md',
+                        force_document=False,
+                        reply_to=reply_to
+                    )
+                else:
+                    # Fallback to message if no poster
+                    await client.send_message(chat_id, caption, parse_mode='md', reply_to=reply_to)
+            except Exception as e:
+                logger.warning(f"Failed to send poster/caption: {e}")
+                # Try to send just the caption as text if file fails
+                try:
+                    await client.send_message(chat_id, caption, parse_mode='md', reply_to=reply_to)
+                except: pass
+            
+            # Cleanup poster temp file
+            if poster_path and os.path.exists(poster_path):
+                try: os.remove(poster_path)
+                except: pass
         
         status_msg = await client.send_message(chat_id, f"📤 Ekstraksi info & upload video: **{title}**...", reply_to=reply_to)
         

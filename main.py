@@ -18,7 +18,7 @@ from api import (
 from downloader import download_all_episodes
 from merge import merge_episodes, split_video
 from uploader import upload_drama, sanitize_filename
-from database import init_db, is_processed, save_processed_db
+from database import init_db, is_processed, save_processed_db, is_failed_skip, log_failure
 
 # Configuration (Use environment variables or replace these directly)
 API_ID = int(os.environ.get("API_ID", "0"))
@@ -64,7 +64,7 @@ def get_panel_buttons():
         [Button.inline(f"📊 Status: {status_text}", b"status")]
     ]
 
-@client.on(events.NewMessage(pattern='/update'))
+@client.on(events.NewMessage(pattern='/netshort update'))
 async def update_bot(event):
     if event.sender_id not in ADMIN_IDS:
         return
@@ -84,7 +84,7 @@ async def update_bot(event):
     except Exception as e:
         await status_msg.edit(f"❌ Gagal melakukan update: {e}")
 
-@client.on(events.NewMessage(pattern='/panel'))
+@client.on(events.NewMessage(pattern='/netshort panel'))
 async def panel(event):
     if event.chat_id not in ADMIN_IDS:
         return
@@ -115,11 +115,11 @@ async def panel_callback(event):
         else:
             logger.error(f"Callback error: {e}")
 
-@client.on(events.NewMessage(pattern='/start'))
+@client.on(events.NewMessage(pattern='/netshort start'))
 async def start(event):
-    await event.reply("Welcome to Dramabox Downloader Bot! 🎉\n\nGunakan perintah\n`/download {bookId}`\n`/download {title}`\n`/search {judul}`\nuntuk mulai.")
+    await event.reply("Welcome to Dramabox Downloader Bot! 🎉\n\nGunakan perintah\n`/netshort download {bookId}`\n`/netshort download {title}`\n`/netshort search {judul}`\nuntuk mulai.")
 
-@client.on(events.NewMessage(pattern=r'/search (.+)'))
+@client.on(events.NewMessage(pattern=r'/netshort search (.+)'))
 async def on_search(event):
     if event.chat_id not in ADMIN_IDS:
         return
@@ -188,6 +188,10 @@ async def dl_callback(event):
         await event.answer("⚠️ Drama ini sudah pernah diupload!", alert=True)
         return
         
+    if await is_failed_skip(book_id):
+        await event.answer("⚠️ Drama ini masuk daftar skip (gagal berulang)!", alert=True)
+        return
+        
     await event.answer("Mulai memproses...")
     status_msg = await client.send_message(ADMIN_ID, f"⏳ Memulai download drama ID: `{book_id}`...")
     
@@ -197,7 +201,7 @@ async def dl_callback(event):
     # Refactoring process_drama_full to return (success, title) would be better.
     BotState.is_manual_processing = False
 
-@client.on(events.NewMessage(pattern=r'/download (.+)'))
+@client.on(events.NewMessage(pattern=r'/netshort download (.+)'))
 async def on_download(event):
     chat_id = event.chat_id
     
@@ -224,6 +228,10 @@ async def on_download(event):
     
     if await is_processed(book_id):
         await event.reply("⚠️ Drama ini sudah pernah diupload!")
+        return
+        
+    if await is_failed_skip(book_id):
+        await event.reply("⚠️ Drama ini masuk daftar skip karena gagal sebelumnya!")
         return
     
     # 1. Fetch data
@@ -262,6 +270,7 @@ async def process_drama_full(book_id, chat_id, status_msg=None, crf: int = 24, p
         err_msg = f"❌ Detail atau Episode `{book_id}` tidak ditemukan."
         if status_msg: await status_msg.edit(err_msg)
         logger.error(err_msg)
+        await log_failure(book_id)
         return False
         
     num_episodes = len(episodes)
@@ -277,30 +286,7 @@ async def process_drama_full(book_id, chat_id, status_msg=None, crf: int = 24, p
     description = detail.get("shotIntroduce") or detail.get("intro") or detail.get("description") or "No description available."
     poster = detail.get("shortPlayCover") or detail.get("highImage") or detail.get("cover") or detail.get("poster") or ""
     
-    # 1. NEW STATUS MESSAGE WITH POSTER (Static Info)
-    base_info = f"🎬 **{title}**\n\n📝 `{description[:400]}`"
-    status_msg = None # This will now be the PROGRESS message
-    
-    if poster:
-        try:
-            # Download poster to temp file first to ensure it sends as PHOTO
-            import httpx
-            import tempfile
-            poster_tmp = os.path.join(tempfile.gettempdir(), f"status_poster_{book_id}.jpg")
-            async with httpx.AsyncClient(verify=False) as http_client:
-                resp = await http_client.get(poster)
-                if resp.status_code == 200:
-                    with open(poster_tmp, "wb") as f:
-                        f.write(resp.content)
-            
-            # Send static info message
-            await client.send_file(chat_id, poster_tmp, caption=base_info, reply_to=reply_to)
-            if os.path.exists(poster_tmp): os.remove(poster_tmp)
-        except Exception as e:
-            logger.warning(f"Failed to send poster: {e}")
-            await client.send_message(chat_id, base_info, reply_to=reply_to)
-    
-    # Send a SEPARATE message for progress
+    # Send a PROGRESS message
     status_msg = await client.send_message(chat_id, "⏳ **Memulai pemrosesan...**", reply_to=reply_to)
     
     # 2. Setup temp directory
@@ -349,6 +335,7 @@ async def process_drama_full(book_id, chat_id, status_msg=None, crf: int = 24, p
                 err_msg = f"❌ Download Gagal: **{title}** ({success_count}/{total_count} eps)"
                 if status_msg: await status_msg.edit(err_msg)
                 logger.error(err_msg)
+                await log_failure(book_id)
                 return False
 
         # 4. Merge (supports per-episode processing)
@@ -399,15 +386,16 @@ async def process_drama_full(book_id, chat_id, status_msg=None, crf: int = 24, p
             err_msg = f"❌ **Merge Gagal (FFmpeg Error)**: **{title}**\n\nSilakan periksa log terminal untuk detail teknis (biasanya terkait font atau path subtitle)."
             if status_msg: await status_msg.edit(err_msg)
             logger.error(err_msg)
+            await log_failure(book_id)
             return False
 
-        # 5. Check Size & Split if needed (> 1.9GB)
+        # 5. Check Size & Split if needed (> 1.99GB)
         video_size = os.path.getsize(output_video_path)
         upload_queue = [output_video_path]
         
-        if video_size > 1900 * 1024 * 1024:
-            if status_msg: await status_msg.edit(f"✂️ Size {video_size/(1024*1024*1024):.2f}GB exceeds limit. Splitting into 2 parts...")
-            upload_queue = await split_video(output_video_path, temp_dir)
+        if video_size > 1990 * 1024 * 1024:
+            if status_msg: await status_msg.edit(f"✂️ Size {video_size/(1024*1024*1024):.2f}GB exceeds limit. Splitting into multiple parts...")
+            upload_queue = await split_video(output_video_path, temp_dir, 1990 * 1024 * 1024)
 
         # 6. Upload
         success_count_upload = 0
@@ -421,7 +409,8 @@ async def process_drama_full(book_id, chat_id, status_msg=None, crf: int = 24, p
                 poster if i == 0 else "", # Only send poster once
                 v_path,
                 ep_info=f"{success_count}/{total_count}",
-                reply_to=reply_to
+                reply_to=reply_to,
+                send_details=(i == 0) # Only send details (cover/description) for the first part
             )
             if res: success_count_upload += 1
 
@@ -437,11 +426,13 @@ async def process_drama_full(book_id, chat_id, status_msg=None, crf: int = 24, p
             err_msg = f"❌ Upload Gagal (Sebagian atau Semua): **{title}**"
             if status_msg: await status_msg.edit(err_msg)
             logger.error(err_msg)
+            await log_failure(book_id)
             return False
             
     except Exception as e:
         logger.error(f"Error processing {book_id}: {e}")
         if status_msg: await status_msg.edit(f"❌ Error: {e}")
+        await log_failure(book_id)
         return False
     finally:
         if os.path.exists(temp_dir):
@@ -487,7 +478,7 @@ async def auto_mode_loop():
                 if bid in processed_ids:
                     continue
                 
-                if await is_processed(bid):
+                if await is_processed(bid) or await is_failed_skip(bid):
                     processed_ids.add(bid)
                     continue
                     

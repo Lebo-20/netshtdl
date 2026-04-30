@@ -258,49 +258,49 @@ async def merge_episodes(
             try: os.remove(list_file)
             except: pass
 
-async def split_video(filepath: str, output_dir: str):
+async def split_video(filepath: str, output_dir: str, max_size_bytes: int = 1990 * 1024 * 1024):
     """
-    Splits video into two equal parts based on duration.
+    Splits video into multiple parts based on maximum size limit.
     Used for files exceeding Telegram's 2GB limit.
     """
     try:
+        file_size = os.path.getsize(filepath)
+        if file_size <= max_size_bytes:
+            return [filepath]
+            
         duration = await get_video_duration(filepath)
         if duration <= 0:
             return [filepath]
+            
+        import math
+        num_parts = math.ceil(file_size / max_size_bytes)
+        part_duration = duration / num_parts
         
-        half_duration = duration / 2
         base_name = os.path.basename(filepath).rsplit(".", 1)[0]
         ext = os.path.basename(filepath).rsplit(".", 1)[1]
         
-        part1 = os.path.join(output_dir, f"PART_1_{base_name}.{ext}")
-        part2 = os.path.join(output_dir, f"PART_2_{base_name}.{ext}")
-        
-        # Split Part 1
-        cmd1 = [
-            "ffmpeg", "-y", "-i", filepath,
-            "-t", str(half_duration),
-            "-c", "copy", "-map", "0",
-            part1
-        ]
-        
-        # Split Part 2
-        cmd2 = [
-            "ffmpeg", "-y", "-ss", str(half_duration),
-            "-i", filepath,
-            "-c", "copy", "-map", "0",
-            part2
-        ]
-        
-        logger.info(f"✂️ Splitting video into 2 parts ({half_duration:.2f}s each)...")
-        
-        p1 = await asyncio.create_subprocess_exec(*cmd1, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        await p1.wait()
-        
-        p2 = await asyncio.create_subprocess_exec(*cmd2, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        await p2.wait()
-        
-        if os.path.exists(part1) and os.path.exists(part2):
-            return [part1, part2]
+        parts = []
+        for i in range(num_parts):
+            part_path = os.path.join(output_dir, f"PART_{i+1}_{base_name}.{ext}")
+            
+            cmd = [
+                "ffmpeg", "-y", 
+                "-ss", str(i * part_duration),
+                "-t", str(part_duration),
+                "-i", filepath,
+                "-c", "copy", "-map", "0",
+                part_path
+            ]
+            
+            logger.info(f"✂️ Splitting video part {i+1}/{num_parts}...")
+            p = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            await p.wait()
+            
+            if os.path.exists(part_path):
+                parts.append(part_path)
+                
+        if len(parts) == num_parts:
+            return parts
         return [filepath]
     except Exception as e:
         logger.error(f"Split error: {e}")
