@@ -82,7 +82,9 @@ async def hardsub_episode(
             "-maxrate", "1800k", "-bufsize", "3600k", # Bitrate cap for 2GB safety
             "-r", "30", # Force CFR
             "-c:a", "aac", "-b:a", "96k", "-ar", "44100", "-ac", "2", # Standard Audio
-            "-async", "1", # Audio Sync
+            "-af", "aresample=async=1,apad", # Fix audio drift and pad missing audio
+            "-shortest", # Ensure stream ends exactly when video ends (prevents freezing)
+            "-avoid_negative_ts", "make_non_negative",
             output_path
         ]
         
@@ -162,7 +164,7 @@ async def merge_episodes(
             async with semaphore:
                 ep_base = file.rsplit(".", 1)[0]
                 mp4_path = os.path.join(video_dir, file)
-                hardsub_out = os.path.join(video_dir, f"hardsub_{file}")
+                hardsub_out = os.path.join(video_dir, f"hardsub_{ep_base}.ts") # USE MPEG-TS FOR SMOOTH CONCAT
                 
                 # Check for subtitles
                 ep_sub = None
@@ -180,7 +182,7 @@ async def merge_episodes(
                     crf, preset, idx, total_eps, progress_callback
                 )
                 if success:
-                    return f"hardsub_{file}"
+                    return f"hardsub_{ep_base}.ts"
                 else:
                     logger.error(f"❌ Failed processing {file}. FFmpeg Log:\n{log}")
                     # Allow skipping failed episode if it's just one, but here we enforce success
@@ -207,9 +209,10 @@ async def merge_episodes(
             total_dur += await get_video_duration(os.path.join(video_dir, item))
 
         concat_cmd = [
-            "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+            "ffmpeg", "-y", "-fflags", "+genpts", "-f", "concat", "-safe", "0",
             "-i", list_file,
             "-c", "copy",
+            "-movflags", "+faststart", # Move moov atom for smooth playback
             output_path
         ]
         
@@ -289,6 +292,8 @@ async def split_video(filepath: str, output_dir: str, max_size_bytes: int = 1990
                 "-t", str(part_duration),
                 "-i", filepath,
                 "-c", "copy", "-map", "0",
+                "-avoid_negative_ts", "make_non_negative",
+                "-movflags", "+faststart",
                 part_path
             ]
             
