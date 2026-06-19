@@ -4,7 +4,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 # NetShort API Configuration
-BASE_URL = "https://netshort.dramabos.my.id/api"
+BASE_URL = "https://netshort.dramabos.online/api"
 AUTH_CODE = "A8D6AB170F7B89F2182561D3B32F390D"
 
 async def get_latest_dramas(pages=1, page_start=1):
