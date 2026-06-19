@@ -31,7 +31,7 @@ if not ADMIN_IDS:
 ADMIN_ID = ADMIN_IDS[0]
 AUTO_CHANNEL = int(os.environ.get("AUTO_CHANNEL", ADMIN_ID)) # Default post to admin
 MESSAGE_THREAD_ID = int(os.environ.get("MESSAGE_THREAD_ID", "0")) or None
-AUTO_INTERVAL = int(os.environ.get("AUTO_INTERVAL", "900")) # Default 15 mins
+AUTO_INTERVAL = int(os.environ.get("AUTO_INTERVAL", "7200")) # Default 15 mins
 PROCESSED_FILE = "processed.json"
 
 print(f"--- BOT CONFIGURATION ---")
@@ -517,7 +517,9 @@ async def auto_mode_loop():
                         await client.send_message(ADMIN_ID, f"🚨 **ERROR**: Gagal memproses `{title}`.")
                     except: pass
                 
-                await asyncio.sleep(10)
+                # Cooldown 30 minutes after processing
+                logger.info("💤 Auto-mode cooling down for 30 minutes...")
+                await asyncio.sleep(30 * 60)
             
             if new_found == 0 and not is_initial_run:
                 logger.info("😴 No new dramas found.")
